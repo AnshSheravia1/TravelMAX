@@ -164,23 +164,38 @@ def run_travel_planner(state: PlannerState):
         print(f"Starting travel planner with state: {state}")
         
         # Process the state through the graph
+        final_state = None
         for output in app.stream(state):
             if isinstance(output, dict):
                 # If the output is nested under create_itinerary, extract it
                 if "create_itinerary" in output:
-                    state = output["create_itinerary"]
+                    final_state = output["create_itinerary"]
+                elif "__end__" in output:
+                    final_state = output["__end__"]
                 else:
-                    state = output
-                print(f"Updated state: {state}")
+                    final_state = output
+                print(f"Updated state: {final_state}")
         
         # Ensure we have an itinerary
-        if not state.get('itinerary'):
-            error_message = "Unable to generate itinerary. Please try again."
-            state['itinerary'] = error_message
-            state['messages'] = state.get('messages', []) + [AIMessage(content=error_message)]
-            print(f"Final state has no itinerary: {state}")
+        if final_state and isinstance(final_state, dict):
+            if "itinerary" in final_state and final_state["itinerary"]:
+                return final_state
+            elif "messages" in final_state:
+                # Extract itinerary from the last AI message
+                for message in reversed(final_state["messages"]):
+                    if isinstance(message, AIMessage) and message.content:
+                        final_state["itinerary"] = message.content
+                        return final_state
         
-        return state
+        # If we get here, something went wrong
+        error_message = "Unable to generate itinerary. Please try again."
+        return {
+            "messages": state.get('messages', []) + [AIMessage(content=error_message)],
+            "city": state.get('city', ''),
+            "interests": state.get('interests', []),
+            "itinerary": error_message,
+            "duration": state.get('duration', 1)
+        }
     except Exception as e:
         print(f"Error in run_travel_planner: {str(e)}")
         error_message = f"An error occurred: {str(e)}"
