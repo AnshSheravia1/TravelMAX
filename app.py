@@ -29,7 +29,7 @@ city = st.text_input("Enter the city you want to visit:")
 # Trip duration selection
 duration = st.selectbox(
     "How many days will you be staying?",
-    options=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    options=[1, 2, 3, 4, 5, 6, 7],
     format_func=lambda x: f"{x} {'day' if x == 1 else 'days'}"
 )
 
