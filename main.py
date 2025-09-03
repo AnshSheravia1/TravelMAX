@@ -18,7 +18,7 @@ class PlannerState(TypedDict):
     itinerary: str
     duration: int
 
-llm = ChatGroq(model="llama3-8b-8192")
+llm = ChatGroq(model="llama-3.1-8b-instant")
 
 itinerary_prompt = ChatPromptTemplate.from_messages([
     ("system", """You are a helpful travel assistant. Create a detailed {duration}-day trip itinerary for {city} based on the user's interests: {interests}.
