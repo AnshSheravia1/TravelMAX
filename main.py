@@ -1,208 +1,381 @@
 import os
-from typing import TypedDict, Annotated, List
+import json
+import asyncio
+from typing import TypedDict, Annotated, List, Dict, Any
+from datetime import datetime
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
-import os
+import logging
+from dataclasses import dataclass
+from enum import Enum
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-os.environ["GROQ_API_KEY"] = os.getenv('GROQ_API_KEY')
+class TripType(Enum):
+    LEISURE = "leisure"
+    BUSINESS = "business"
+    ADVENTURE = "adventure"
+    CULTURAL = "cultural"
+
+class BudgetRange(Enum):
+    BUDGET = "budget"
+    MODERATE = "moderate"
+    LUXURY = "luxury"
+
+@dataclass
+class TravelPreferences:
+    transportation: str
+    accommodation_type: str
+    dietary_restrictions: List[str]
+    accessibility_needs: List[str]
+    budget_range: BudgetRange
 
 class PlannerState(TypedDict):
     messages: Annotated[List[HumanMessage | AIMessage], "The messages in the conversation"]
     city: str
+    country: str
     interests: List[str]
     itinerary: str
     duration: int
+    trip_type: TripType
+    budget_range: BudgetRange
+    preferences: Dict[str, Any]
+    weather_info: Dict[str, Any]
+    local_events: List[Dict[str, Any]]
+    estimated_cost: float
+    error_log: List[str]
+    performance_metrics: Dict[str, float]
 
-llm = ChatGroq(model="llama3-8b-8192")
+class TravelPlannerService:
+    def __init__(self):
+        self.llm = ChatGroq(
+            model="llama-3.1-8b-instant",
+            temperature=0.7,
+            max_retries=3
+        )
+        self.performance_metrics = {}
+        
+    async def get_weather_data(self, city: str, country: str) -> Dict[str, Any]:
+        """Simulate weather API call - in production, integrate with OpenWeatherMap"""
+        try:
+            # Simulate API response
+            return {
+                "temperature": "22°C",
+                "condition": "Partly Cloudy",
+                "forecast": "Pleasant weather expected",
+                "best_time_to_visit": "Morning and evening"
+            }
+        except Exception as e:
+            logger.error(f"Weather API error: {str(e)}")
+            return {"error": str(e)}
+    
+    async def get_local_events(self, city: str, duration: int) -> List[Dict[str, Any]]:
+        """Simulate events API call - in production, integrate with Eventbrite/local APIs"""
+        try:
+            # Simulate event data
+            return [
+                {
+                    "name": f"Local Festival in {city}",
+                    "date": "2024-12-01",
+                    "type": "Cultural",
+                    "price": "Free"
+                }
+            ]
+        except Exception as e:
+            logger.error(f"Events API error: {str(e)}")
+            return []
+    
+    def calculate_estimated_cost(self, state: PlannerState) -> float:
+        """Calculate estimated trip cost based on duration, city, and budget range"""
+        try:
+            base_cost_per_day = {
+                BudgetRange.BUDGET: 50,
+                BudgetRange.MODERATE: 150,
+                BudgetRange.LUXURY: 400
+            }
+            
+            city_multiplier = {
+                "paris": 1.5, "london": 1.4, "tokyo": 1.3,
+                "new york": 1.6, "bangkok": 0.7, "mumbai": 0.5
+            }
+            
+            multiplier = city_multiplier.get(state['city'].lower(), 1.0)
+            daily_cost = base_cost_per_day.get(state['budget_range'], 150)
+            
+            return round(daily_cost * state['duration'] * multiplier, 2)
+        except Exception as e:
+            logger.error(f"Cost calculation error: {str(e)}")
+            return 0.0
 
+# Initialize service
+travel_service = TravelPlannerService()
+
+# Enhanced prompt templates
 itinerary_prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are a helpful travel assistant. Create a detailed {duration}-day trip itinerary for {city} based on the user's interests: {interests}.
+    ("system", """You are an AI travel planning assistant with expertise in creating personalized, detailed itineraries.
+
+    Create a comprehensive {duration}-day trip itinerary for {city}, {country} based on:
+    - User interests: {interests}
+    - Trip type: {trip_type}
+    - Budget range: {budget_range}
+    - Weather info: {weather_info}
+    - Local events: {local_events}
+    - Estimated budget: ${estimated_cost}
+
+    Structure your response as follows:
     
-    Please structure your response in the following format:
+    # {duration}-Day {trip_type} Trip to {city}, {country}
     
-    # {duration}-Day Trip Itinerary for {city}
+    ## Trip Overview
+    - **Budget Range**: {budget_range}
+    - **Estimated Total Cost**: ${estimated_cost}
+    - **Weather**: {weather_info}
+    - **Best Times to Visit**: Based on weather and crowd patterns
     
-    ## Day 1
-    ### Morning
-    - [Time] Activity 1
-    - [Time] Activity 2
+    ## Daily Itinerary
     
-    ### Afternoon
-    - [Time] Activity 3
-    - [Time] Activity 4
+    ### Day 1: [Theme]
+    **Morning (9:00 AM - 12:00 PM)**
+    - 🏛️ [Activity] - [Location] ($cost estimate)
+      - Duration: X hours
+      - Why visit: [Brief description]
+      - Tips: [Practical advice]
     
-    ### Evening
-    - [Time] Activity 5
-    - [Time] Activity 6
+    **Afternoon (12:00 PM - 5:00 PM)**
+    - 🍽️ Lunch: [Restaurant] - [Cuisine type] ($cost)
+    - 🎯 [Activity] - [Location] ($cost)
     
-    ### Food & Dining
-    - [Time] Restaurant/Cafe recommendation
-    - [Time] Restaurant/Cafe recommendation
+    **Evening (5:00 PM - 10:00 PM)**
+    - 🌆 [Activity/Experience]
+    - 🍽️ Dinner: [Restaurant recommendation]
     
-    [Repeat the above structure for each day]
+    **Transportation**: [Daily transport method and cost]
+    **Daily Budget**: $[amount]
     
-    ## Additional Tips
-    - Tip 1
-    - Tip 2
+    [Repeat for each day]
     
-    Make sure to:
-    1. Include specific locations, addresses, and estimated times for each activity
-    2. Consider travel time between locations
-    3. Group activities by area to minimize travel
-    4. Include a mix of popular attractions and local experiences
-    5. Consider opening hours and best times to visit each location
-    - 6. Include a variety of dining options that match the user's interests
-    - 7. Add practical tips for getting around the city
+    ## Local Events & Special Experiences
+    {local_events}
     
-    For multi-day trips, ensure activities are logically grouped and consider:
-    - Starting with major attractions on the first day
-    - Grouping activities by neighborhood/area
-    - Including some flexibility in the schedule
-    - Suggesting evening activities for each day
-    - Including a mix of indoor and outdoor activities
-    - Considering weather-appropriate activities"""),
-    ("human", "Create an itinerary for my trip."),
+    ## Practical Information
+    - **Getting Around**: Transportation options and costs
+    - **Local Currency**: Exchange rates and payment methods
+    - **Cultural Etiquette**: Important local customs
+    - **Emergency Contacts**: Essential numbers
+    - **Language Tips**: Key phrases
+    
+    ## Budget Breakdown
+    - Accommodation: $[amount]
+    - Transportation: $[amount]  
+    - Food & Dining: $[amount]
+    - Activities & Attractions: $[amount]
+    - Shopping & Miscellaneous: $[amount]
+    - **Total Estimated Cost**: ${estimated_cost}
+    
+    Make the itinerary personalized, practical, and engaging while staying within the specified budget range."""),
+    ("human", "Create my personalized itinerary."),
 ])
 
-def input_city(state: PlannerState) -> PlannerState:
-    return {
-        "messages": state.get('messages', []) + [HumanMessage(content=f"I want to visit {state['city']}")],
-        "city": state.get('city', ''),
-        "interests": state.get('interests', []),
-        "itinerary": state.get('itinerary', ''),
-        "duration": state.get('duration', 1)
-    }
-
-def input_interests(state: PlannerState) -> PlannerState:
-    return {
-        "messages": state.get('messages', []) + [HumanMessage(content=f"My interests are: {', '.join(state['interests'])}")],
-        "city": state.get('city', ''),
-        "interests": state.get('interests', []),
-        "itinerary": state.get('itinerary', ''),
-        "duration": state.get('duration', 1)
-    }
-
-def create_itinerary(state: PlannerState) -> PlannerState:
+# Enhanced node functions
+async def validate_input(state: PlannerState) -> PlannerState:
+    """Validate and enrich input data"""
+    start_time = datetime.now()
+    errors = []
+    
     try:
-        print(f"Generating {state.get('duration', 1)}-day itinerary for {state['city']} with interests: {state['interests']}")
-        response = llm.invoke(itinerary_prompt.format_messages(
-            city=state['city'],
-            interests=", ".join(state['interests']),
-            duration=state.get('duration', 1)
-        ))
+        # Validation logic
+        if not state.get('city'):
+            errors.append("City is required")
+        if not state.get('interests'):
+            errors.append("Interests are required")
+        if state.get('duration', 0) < 1:
+            errors.append("Duration must be at least 1 day")
+        
+        # Set defaults
+        if 'country' not in state:
+            state['country'] = "Unknown"
+        if 'trip_type' not in state:
+            state['trip_type'] = TripType.LEISURE
+        if 'budget_range' not in state:
+            state['budget_range'] = BudgetRange.MODERATE
+            
+        processing_time = (datetime.now() - start_time).total_seconds()
+        
+        return {
+            **state,
+            "error_log": errors,
+            "performance_metrics": {
+                **state.get("performance_metrics", {}),
+                "validation_time": processing_time
+            }
+        }
+    except Exception as e:
+        logger.error(f"Validation error: {str(e)}")
+        return {
+            **state,
+            "error_log": errors + [str(e)]
+        }
+
+async def gather_travel_data(state: PlannerState) -> PlannerState:
+    """Gather weather and events data asynchronously"""
+    start_time = datetime.now()
+    
+    try:
+        # Gather data concurrently
+        weather_task = travel_service.get_weather_data(state['city'], state['country'])
+        events_task = travel_service.get_local_events(state['city'], state['duration'])
+        
+        weather_info, local_events = await asyncio.gather(weather_task, events_task)
+        
+        processing_time = (datetime.now() - start_time).total_seconds()
+        
+        return {
+            **state,
+            "weather_info": weather_info,
+            "local_events": local_events,
+            "performance_metrics": {
+                **state.get("performance_metrics", {}),
+                "data_gathering_time": processing_time
+            }
+        }
+    except Exception as e:
+        logger.error(f"Data gathering error: {str(e)}")
+        return {
+            **state,
+            "error_log": state.get("error_log", []) + [f"Data gathering failed: {str(e)}"]
+        }
+
+async def create_enhanced_itinerary(state: PlannerState) -> PlannerState:
+    """Create detailed itinerary with cost estimation"""
+    start_time = datetime.now()
+    
+    try:
+        # Calculate estimated cost
+        estimated_cost = travel_service.calculate_estimated_cost(state)
+        
+        # Prepare context for LLM
+        context = {
+            "city": state['city'],
+            "country": state['country'],
+            "interests": ", ".join(state['interests']),
+            "duration": state['duration'],
+            "trip_type": state.get('trip_type', TripType.LEISURE).value,
+            "budget_range": state.get('budget_range', BudgetRange.MODERATE).value,
+            "weather_info": json.dumps(state.get('weather_info', {})),
+            "local_events": json.dumps(state.get('local_events', [])),
+            "estimated_cost": estimated_cost
+        }
+        
+        # Generate itinerary
+        response = await asyncio.to_thread(
+            lambda: travel_service.llm.invoke(
+                itinerary_prompt.format_messages(**context)
+            )
+        )
+        
+        processing_time = (datetime.now() - start_time).total_seconds()
         
         if not response or not response.content:
-            print("Empty response from LLM")
-            return {
-                "messages": state.get('messages', []) + [AIMessage(content="Failed to generate itinerary. The AI model returned an empty response.")],
-                "city": state.get('city', ''),
-                "interests": state.get('interests', []),
-                "itinerary": "Failed to generate itinerary. The AI model returned an empty response.",
-                "duration": state.get('duration', 1)
-            }
-        
-        print(f"LLM Response: {response.content[:100]}...")  # Print first 100 chars of response
+            raise ValueError("Empty response from LLM")
         
         return {
-            "messages": state.get('messages', []) + [AIMessage(content=response.content)],
-            "city": state.get('city', ''),
-            "interests": state.get('interests', []),
+            **state,
             "itinerary": response.content,
-            "duration": state.get('duration', 1)
+            "estimated_cost": estimated_cost,
+            "messages": state.get('messages', []) + [AIMessage(content=response.content)],
+            "performance_metrics": {
+                **state.get("performance_metrics", {}),
+                "itinerary_generation_time": processing_time,
+                "total_processing_time": sum(state.get("performance_metrics", {}).values()) + processing_time
+            }
         }
     except Exception as e:
-        print(f"Error in create_itinerary: {str(e)}")
+        logger.error(f"Itinerary generation error: {str(e)}")
         error_message = f"Error generating itinerary: {str(e)}"
         return {
-            "messages": state.get('messages', []) + [AIMessage(content=error_message)],
-            "city": state.get('city', ''),
-            "interests": state.get('interests', []),
+            **state,
             "itinerary": error_message,
-            "duration": state.get('duration', 1)
+            "error_log": state.get("error_log", []) + [error_message]
         }
 
-graph = StateGraph(PlannerState)
+# Build the enhanced graph
+def build_travel_planner_graph():
+    """Build and return the travel planner state graph"""
+    graph = StateGraph(PlannerState)
+    
+    # Add nodes
+    graph.add_node("validate_input", validate_input)
+    graph.add_node("gather_travel_data", gather_travel_data)
+    graph.add_node("create_enhanced_itinerary", create_enhanced_itinerary)
+    
+    # Define workflow
+    graph.set_entry_point("validate_input")
+    graph.add_edge("validate_input", "gather_travel_data")
+    graph.add_edge("gather_travel_data", "create_enhanced_itinerary")
+    graph.add_edge("create_enhanced_itinerary", END)
+    
+    return graph.compile()
 
-graph.add_node("input_city", input_city)
-graph.add_node("input_interests", input_interests)
-graph.add_node("create_itinerary", create_itinerary)
+# Initialize the compiled graph
+app = build_travel_planner_graph()
 
-graph.set_entry_point("input_city")
-
-graph.add_edge("input_city", "input_interests")
-graph.add_edge("input_interests", "create_itinerary")
-graph.add_edge("create_itinerary", END)
-
-app = graph.compile()
-
-def run_travel_planner(state: PlannerState):
+async def run_travel_planner(state: PlannerState) -> PlannerState:
     """
-    Run the travel planner with the given state.
-    Returns the final state after processing.
+    Run the enhanced travel planner with the given state.
+    Returns the final state after processing with performance metrics.
     """
     try:
-        # Ensure state has all required fields
-        if not isinstance(state, dict):
-            state = {}
+        logger.info(f"Starting enhanced travel planner with state: {state}")
         
-        if "messages" not in state:
-            state["messages"] = []
-        if "city" not in state:
-            state["city"] = ""
-        if "interests" not in state:
-            state["interests"] = []
-        if "itinerary" not in state:
-            state["itinerary"] = ""
-        if "duration" not in state:
-            state["duration"] = 1
-
-        print(f"Starting travel planner with state: {state}")
+        # Ensure state has all required fields with defaults
+        default_state = {
+            "messages": [],
+            "city": "",
+            "country": "",
+            "interests": [],
+            "itinerary": "",
+            "duration": 1,
+            "trip_type": TripType.LEISURE,
+            "budget_range": BudgetRange.MODERATE,
+            "preferences": {},
+            "weather_info": {},
+            "local_events": [],
+            "estimated_cost": 0.0,
+            "error_log": [],
+            "performance_metrics": {}
+        }
         
-        # Process the state through the graph
-        final_state = None
-        for output in app.stream(state):
+        # Merge with provided state
+        final_state = {**default_state, **state}
+        
+        # Process through the graph
+        async for output in app.astream(final_state):
             if isinstance(output, dict):
-                # If the output is nested under create_itinerary, extract it
-                if "create_itinerary" in output:
-                    final_state = output["create_itinerary"]
-                elif "__end__" in output:
-                    final_state = output["__end__"]
-                else:
-                    final_state = output
-                print(f"Updated state: {final_state}")
+                for node_name, node_output in output.items():
+                    if node_output and isinstance(node_output, dict):
+                        final_state.update(node_output)
+                        logger.info(f"Processed node: {node_name}")
         
-        # Ensure we have an itinerary
-        if final_state and isinstance(final_state, dict):
-            if "itinerary" in final_state and final_state["itinerary"]:
-                return final_state
-            elif "messages" in final_state:
-                # Extract itinerary from the last AI message
-                for message in reversed(final_state["messages"]):
-                    if isinstance(message, AIMessage) and message.content:
-                        final_state["itinerary"] = message.content
-                        return final_state
+        logger.info(f"Travel planner completed. Performance: {final_state.get('performance_metrics', {})}")
+        return final_state
         
-        # If we get here, something went wrong
-        error_message = "Unable to generate itinerary. Please try again."
-        return {
-            "messages": state.get('messages', []) + [AIMessage(content=error_message)],
-            "city": state.get('city', ''),
-            "interests": state.get('interests', []),
-            "itinerary": error_message,
-            "duration": state.get('duration', 1)
-        }
     except Exception as e:
-        print(f"Error in run_travel_planner: {str(e)}")
-        error_message = f"An error occurred: {str(e)}"
+        logger.error(f"Error in run_travel_planner: {str(e)}")
+        error_message = f"System error: {str(e)}"
         return {
-            "messages": state.get('messages', []) + [AIMessage(content=error_message)],
-            "city": state.get('city', ''),
-            "interests": state.get('interests', []),
+            **state,
             "itinerary": error_message,
-            "duration": state.get('duration', 1)
+            "error_log": [error_message]
         }
+
+# Synchronous wrapper for backward compatibility
+def run_travel_planner_sync(state: PlannerState) -> PlannerState:
+    """Synchronous wrapper for the async travel planner"""
+    return asyncio.run(run_travel_planner(state))
